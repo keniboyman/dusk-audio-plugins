@@ -21,6 +21,7 @@ ChordAnalyzerProcessor::ChordAnalyzerProcessor()
     parameters.addParameterListener(PARAM_SUGGESTION_LEVEL, this);
     parameters.addParameterListener(PARAM_SHOW_INVERSIONS, this);
     parameters.addParameterListener(PARAM_RESPECT_SUSTAIN, this);
+    parameters.addParameterListener(PARAM_CHORD_GROUPING_WINDOW, this);
 
     // Initialize from current parameter values
     keyRoot.store(static_cast<int>(*parameters.getRawParameterValue(PARAM_KEY_ROOT)));
@@ -28,6 +29,7 @@ ChordAnalyzerProcessor::ChordAnalyzerProcessor()
     suggestionLevel.store(static_cast<int>(*parameters.getRawParameterValue(PARAM_SUGGESTION_LEVEL)));
     showInversions.store(*parameters.getRawParameterValue(PARAM_SHOW_INVERSIONS) > 0.5f);
     respectSustain.store(*parameters.getRawParameterValue(PARAM_RESPECT_SUSTAIN) > 0.5f);
+    chordGroupingWindowMs.store(*parameters.getRawParameterValue(PARAM_CHORD_GROUPING_WINDOW));
 
     analyzer.setKey(keyRoot.load(), keyMinor.load());
 
@@ -131,6 +133,7 @@ ChordAnalyzerProcessor::~ChordAnalyzerProcessor()
     parameters.removeParameterListener(PARAM_SUGGESTION_LEVEL, this);
     parameters.removeParameterListener(PARAM_SHOW_INVERSIONS, this);
     parameters.removeParameterListener(PARAM_RESPECT_SUSTAIN, this);
+    parameters.removeParameterListener(PARAM_CHORD_GROUPING_WINDOW, this);
 }
 
 //==============================================================================
@@ -174,6 +177,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout ChordAnalyzerProcessor::crea
         "Respect Sustain",
         true));
 
+    // Chord grouping window for strumming/arpeggiation (0-500ms, default 100ms)
+    // Groups notes arriving within this time into a single chord event for history.
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID(PARAM_CHORD_GROUPING_WINDOW, 1),
+        "Chord Grouping Window (ms)",
+        juce::NormalisableRange<float>(0.0f, 500.0f, 1.0f),
+        100.0f));
+
     // NOTE: detection-output parameters are added directly to the processor
     // (not APVTS-managed) in the constructor body — see ctor for rationale.
 
@@ -212,6 +223,10 @@ void ChordAnalyzerProcessor::parameterChanged(const juce::String& parameterID, f
     else if (parameterID == PARAM_RESPECT_SUSTAIN)
     {
         respectSustain.store(newValue > 0.5f);
+    }
+    else if (parameterID == PARAM_CHORD_GROUPING_WINDOW)
+    {
+        chordGroupingWindowMs.store(newValue);
     }
 }
 
@@ -479,7 +494,7 @@ void ChordAnalyzerProcessor::updateAnalysis(const PendingAnalysis& snapshot)
 
     analyzer.setKey(keyRoot.load(), keyMinor.load());
 
-    // Analyze the current notes
+    // Analyze the current notes for live display
     ChordInfo newChord = analyzer.analyze(notesCopy);
 
     // Get suggestions based on suggestion level
@@ -496,18 +511,79 @@ void ChordAnalyzerProcessor::updateAnalysis(const PendingAnalysis& snapshot)
     {
         const juce::SpinLock::ScopedLockType lock(chordLock);
 
+        // Always update live chord display
         if (newChord != currentChord)
         {
             currentChord = newChord;
             chordChangedFlag.store(true);
 
             stageDetectedChord(newChord);
+        }
 
-            // Always-on history — append valid chords so the editor can show
-            // the last N played even after notes are released. Writes go
-            // into a preallocated ring buffer so updates never need to shift
-            // entries (the previous std::vector
-            // push_back / erase(begin()) was both heap-touching and O(N)).
+        // ==================================================================
+        // Chord grouping logic for history: only add to Recent Chords
+        // when the grouping window expires, not on every intermediate change.
+        // ==================================================================
+        const double windowMs = chordGroupingWindowMs.load(std::memory_order_relaxed);
+        const bool groupingEnabled = windowMs > 0.0;
+
+        if (groupingEnabled)
+        {
+            // Check if window is currently active
+            const bool windowActive = groupingWindowStartTime >= 0.0;
+            const double elapsedMs = (snapshot.timeSec - groupingWindowStartTime) * 1000.0;
+
+            if (!windowActive && (notesCopy.size() > 0))
+            {
+                // Start a new grouping window on the first note of a new chord
+                groupingWindowStartTime = snapshot.timeSec;
+                groupedNoteWords = snapshot.noteWords;
+                pendingGroupedChord = newChord;
+            }
+            else if (windowActive && elapsedMs < windowMs)
+            {
+                // Still inside the window: accumulate notes and re-analyze
+                // Merge note words: union of all notes in the grouping event
+                for (size_t i = 0; i < groupedNoteWords.size(); ++i)
+                    groupedNoteWords[i] |= snapshot.noteWords[i];
+
+                // Re-analyze with all accumulated notes
+                std::vector<int> groupedNotes = notesFromWords(groupedNoteWords);
+                pendingGroupedChord = analyzer.analyze(groupedNotes);
+            }
+            else if (windowActive && elapsedMs >= windowMs)
+            {
+                // Window has expired: commit the pending grouped chord to history
+                if (pendingGroupedChord.isValid && !pendingGroupedChord.name.isEmpty() 
+                    && pendingGroupedChord.name != "-")
+                {
+                    const int lastIdx = (historyHead - 1 + maxHistorySize) % maxHistorySize;
+                    const bool isDup = historyCount > 0 && chordHistory[lastIdx] == pendingGroupedChord;
+                    if (!isDup)
+                    {
+                        chordHistory[historyHead] = pendingGroupedChord;
+                        historyHead = (historyHead + 1) % maxHistorySize;
+                        if (historyCount < maxHistorySize)
+                            ++historyCount;
+                    }
+                }
+
+                // Close the grouping window
+                groupingWindowStartTime = -1.0;
+                groupedNoteWords.fill(0);
+                pendingGroupedChord = ChordInfo();
+
+                // Record the grouped chord if recording
+                const juce::SpinLock::ScopedLockType recLock(recorderLock);
+                if (recorder.isRecording())
+                {
+                    recorder.recordChord(pendingGroupedChord, snapshot.timeSec);
+                }
+            }
+        }
+        else
+        {
+            // Grouping disabled: use original behavior (add to history immediately)
             if (newChord.isValid && !newChord.name.isEmpty() && newChord.name != "-")
             {
                 const int lastIdx = (historyHead - 1 + maxHistorySize) % maxHistorySize;
@@ -540,9 +616,9 @@ void ChordAnalyzerProcessor::stageDetectedChord(const ChordInfo& chord)
     // setValueNotifyingHost after analysis completes.
     // Choice index 0 always represents "no chord / unknown".
     const int rootIndex      = (chord.isValid && chord.rootNote >= 0 && chord.rootNote < 12)
-                                  ? chord.rootNote + 1 : 0;
+                                   ? chord.rootNote + 1 : 0;
     const int bassIndex      = (chord.isValid && chord.bassNote >= 0 && chord.bassNote < 12)
-                                  ? chord.bassNote + 1 : 0;
+                                   ? chord.bassNote + 1 : 0;
     const int rawQualityIndex =
         (chord.isValid && chord.quality != ChordQuality::Unknown)
             ? static_cast<int>(chord.quality) + 1 : 0;
@@ -553,7 +629,7 @@ void ChordAnalyzerProcessor::stageDetectedChord(const ChordInfo& chord)
     const int maxInversionIndex = detectedInversionParam != nullptr
         ? std::max(0, detectedInversionParam->choices.size() - 1) : 0;
     const int inversionIndex = chord.isValid
-                                  ? juce::jlimit(0, maxInversionIndex, chord.inversion + 1) : 0;
+                                   ? juce::jlimit(0, maxInversionIndex, chord.inversion + 1) : 0;
 
     pendingRootIndex.store(rootIndex);
     pendingQualityIndex.store(qualityIndex);
