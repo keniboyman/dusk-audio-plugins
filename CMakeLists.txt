@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(DuskPlugins VERSION 1.0.0)
+project(ChordAnalyzer VERSION 1.0.0)
 
 # Enable CTest so per-plugin regression tests registered via add_test() are
 # discoverable from the build root (`ctest --test-dir build`).
@@ -62,78 +62,10 @@ endif()
 # CI builds don't need to install plugins to system directories
 option(DUSK_COPY_AFTER_BUILD "Copy plugins to system VST3/LV2 dirs after build" ON)
 
-# Option to build all plugins or specific ones
-option(BUILD_4K_EQ "Build 4K EQ plugin" ON)
-option(BUILD_MULTI_COMP "Build Multi-Comp plugin" ON)
-option(BUILD_HARMONIC_GENERATOR "Build Harmonic Generator plugin" OFF)  # Directory missing
-option(BUILD_TAPE_MACHINE "Build TapeMachine plugin" ON)
-option(BUILD_GROOVEMIND "Build GrooveMind plugin" ON)  # ML-based intelligent drummer
-option(BUILD_CONVOLUTION_REVERB "Build Convolution Reverb plugin" ON)
-option(BUILD_MULTI_Q "Build Multi-Q plugin" ON)
-option(BUILD_TAPE_ECHO "Build Tape Echo plugin" ON)
+# Build Chord Analyzer plugin
 option(BUILD_CHORD_ANALYZER "Build Chord Analyzer plugin" ON)
-option(BUILD_SPECTRUM_ANALYZER "Build Spectrum Analyzer plugin" ON)
-option(BUILD_DUSKVERB "Build DuskVerb plugin" ON)
 
-# Add plugin subdirectories
-if(BUILD_4K_EQ)
-    add_subdirectory(plugins/4k-eq)
-endif()
-
-if(BUILD_MULTI_COMP)
-    add_subdirectory(plugins/multi-comp)
-endif()
-
-if(BUILD_HARMONIC_GENERATOR)
-    add_subdirectory(plugins/harmonic-generator)
-endif()
-
-if(BUILD_TAPE_MACHINE)
-    add_subdirectory(plugins/TapeMachine)
-endif()
-
-if(BUILD_GROOVEMIND)
-    add_subdirectory(plugins/groovemind)
-endif()
-
-if(BUILD_CONVOLUTION_REVERB)
-    add_subdirectory(plugins/convolution-reverb)
-endif()
-
-if(BUILD_MULTI_Q)
-    add_subdirectory(plugins/multi-q)
-endif()
-
-if(BUILD_TAPE_ECHO)
-    add_subdirectory(plugins/tape-echo)
-endif()
-
+# Add plugin subdirectory
 if(BUILD_CHORD_ANALYZER)
     add_subdirectory(plugins/chord-analyzer)
-endif()
-
-if(BUILD_SPECTRUM_ANALYZER)
-    add_subdirectory(plugins/spectrum-analyzer)
-endif()
-
-if(BUILD_DUSKVERB)
-    add_subdirectory(plugins/DuskVerb)
-endif()
-
-option(BUILD_DUSKAMP "Build DuskAmp plugin" ON)
-if(BUILD_DUSKAMP)
-    add_subdirectory(plugins/DuskAmp)
-endif()
-
-# DuskAmp test harnesses (golden render generator, CPU harness, etc.)
-option(BUILD_DUSKAMP_TESTS "Build DuskAmp test executables (golden render generator, CPU harness)" OFF)
-if(BUILD_DUSKAMP AND BUILD_DUSKAMP_TESTS)
-    add_subdirectory(tests/duskamp_golden_render)
-    add_subdirectory(tests/duskamp_cpu_harness)
-endif()
-
-# DuskVerb measurement tool — hosts the AU bundle to render test signals.
-option(BUILD_DUSKVERB_RENDER "Build DuskVerb plugin-host render tool" OFF)
-if(BUILD_DUSKVERB_RENDER)
-    add_subdirectory(tests/duskverb_render)
 endif()
