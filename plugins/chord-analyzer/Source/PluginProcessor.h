@@ -115,6 +115,7 @@ public:
     static constexpr const char* PARAM_SUGGESTION_LEVEL = "suggestionLevel";
     static constexpr const char* PARAM_SHOW_INVERSIONS = "showInversions";
     static constexpr const char* PARAM_RESPECT_SUSTAIN = "respectSustain";
+    static constexpr const char* PARAM_CHORD_GROUPING_WINDOW = "chordGroupingWindow";
 
     // Output (read-only) parameters — populated by the processor so headless
     // hosts (e.g. Zynthian, generic Reaper view) can display detection results
@@ -165,12 +166,26 @@ private:
     mutable juce::SpinLock chordLock;
 
     //==========================================================================
+    // Chord grouping state (message-thread only, accessed in timerCallback).
+    // Accumulates notes within a grouping window and commits them to history
+    // as a single chord event, rather than recording intermediate states
+    // during strumming/arpeggiation.
+    //
+    // The grouping window is based on MIDI event timestamps (snapshot.timeSec),
+    // not wall-clock time, so note-off events and UI delays don't affect
+    // whether notes belong to the same chord.
+    double groupingWindowStartTime = -1.0;      // -1.0 = not active; otherwise MIDI event time
+    std::array<uint64_t, 2> groupedNoteWords{}; // Accumulated pitch classes during window
+    ChordInfo pendingGroupedChord;               // Analysis of grouped notes
+
+    //==========================================================================
     // Key state (atomic for thread safety)
     std::atomic<int> keyRoot{0};
     std::atomic<bool> keyMinor{false};
     std::atomic<int> suggestionLevel{2};  // 0=Basic, 1=+Inter, 2=All
     std::atomic<bool> showInversions{true};
     std::atomic<bool> respectSustain{true};
+    std::atomic<double> chordGroupingWindowMs{100.0};  // Default: 100ms
 
     // Last host BPM observed in processBlock — read by startRecording() so
     // recorded events get beat values aligned with the DAW's tempo. Falls
